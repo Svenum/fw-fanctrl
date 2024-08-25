@@ -224,6 +224,11 @@ function install() {
         NO_BATTERY_SENSOR_OPTION="--no-battery-sensors"
     fi
 
+    # add --no-battery-sensors flag to the fanctrl service if specified
+    if [ "$NO_BATTERY_SENSOR" = true ]; then
+        NO_BATTERY_SENSOR_OPTION="--no-battery-sensors"
+    fi
+
     # create program services based on the services present in the './services' folder
     echo "creating '$DEST_DIR$PREFIX_DIR/lib/systemd/system'"
     mkdir -p "$DEST_DIR$PREFIX_DIR/lib/systemd/system"
