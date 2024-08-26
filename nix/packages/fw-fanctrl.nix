@@ -1,21 +1,18 @@
-{ 
-lib,
-python3Packages,
-python3,
-bash,
-callPackage,
-getopt,
-fw-ectool
+{ lib
+, python3Packages
+, python3
+, bash
+, getopt
+, fw-ectool
 }:
 
 let
-  pversion = "20-04-2024";
   description = "A simple systemd service to better control Framework Laptop's fan(s)";
   url = "https://github.com/TamtamHero/fw-fanctrl";
 in
-python3Packages.buildPythonPackage rec{
+python3Packages.buildPythonPackage rec {
   pname = "fw-fanctrl";
-  version = pversion;
+  version = "20-04-2024";
 
   src = ../../.;
 
