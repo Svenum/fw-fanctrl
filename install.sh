@@ -3,7 +3,7 @@ set -e
 
 # Argument parsing
 SHORT=r,d:,p:,s:,h
-LONG=remove,dest-dir:,prefix-dir:,sysconf-dir:,no-ectool,no-pre-uninstall,no-post-install,no-battery-sensors,no-sudo,no-pip-install,pipx,python-prefix-dir:,effective-installation-dir:,help
+LONG=remove,dest-dir:,prefix-dir:,sysconf-dir:,no-ectool,no-pre-uninstall,no-post-install,no-sudo,no-pip-install,pipx,python-prefix-dir:,effective-installation-dir:,ignore-tool:,help
 VALID_ARGS=$(getopt -a --options $SHORT --longoptions $LONG -- "$@")
 if [[ $? -ne 0 ]]; then
     exit 1;
@@ -15,11 +15,10 @@ trap 'rm -rf $TEMP_FOLDER' EXIT
 PREFIX_DIR="/usr"
 DEST_DIR=""
 SYSCONF_DIR="/etc"
-SHOULD_INSTALL_ECTOOL=true
+IGNORED_TOOLS=()
 SHOULD_PRE_UNINSTALL=true
 SHOULD_POST_INSTALL=true
 SHOULD_REMOVE=false
-NO_BATTERY_SENSOR=false
 NO_SUDO=false
 NO_PIP_INSTALL=false
 PIPX=false
@@ -45,16 +44,14 @@ while true; do
         shift
         ;;
     '--no-ectool')
-        SHOULD_INSTALL_ECTOOL=false
+        # legacy
+        IGNORED_TOOLS+=("ectool")
         ;;
     '--no-pre-uninstall')
         SHOULD_PRE_UNINSTALL=false
         ;;
     '--no-post-install')
         SHOULD_POST_INSTALL=false
-        ;;
-    '--no-battery-sensors')
-        NO_BATTERY_SENSOR=true
         ;;
     '--no-sudo')
         NO_SUDO=true
@@ -73,8 +70,12 @@ while true; do
         EFFECTIVE_INSTALLATION_DIRECTORY_OVERRIDE=$2
         shift
         ;;
+    '--ignore-tool')
+        IGNORED_TOOLS+=("$2")
+        shift
+        ;;
     '--help' | '-h')
-        echo "Usage: $0 [--remove,-r] [--dest-dir,-d <installation destination directory (defaults to $DEST_DIR)>] [--prefix-dir,-p <installation prefix directory (defaults to $PREFIX_DIR)>] [--sysconf-dir,-s system configuration destination directory (defaults to $SYSCONF_DIR)] [--no-ectool] [--no-post-install] [--no-pre-uninstall] [--no-sudo] [--no-pip-install] [--pipx] [--python-prefix-dir (defaults to $DEST_DIR$PREFIX_DIR)]" 1>&2
+        echo "Usage: $0 [--remove,-r] [--dest-dir,-d <installation destination directory (defaults to $DEST_DIR)>] [--prefix-dir,-p <installation prefix directory (defaults to $PREFIX_DIR)>] [--sysconf-dir,-s <system configuration destination directory (defaults to $SYSCONF_DIR)>] [--ignore-tool <tool id to ignore (e.g. 'framework_tool')>] [--no-post-install] [--no-pre-uninstall] [--no-sudo] [--no-pip-install] [--pipx] [--python-prefix-dir <(defaults to $DEST_DIR$PREFIX_DIR)>]" 1>&2
         exit 0
         ;;
     --)
@@ -132,7 +133,6 @@ SERVICES_DIR="./services"
 SERVICE_EXTENSION=".service"
 
 SERVICES="$(cd "$SERVICES_DIR" && find . -maxdepth 1 -maxdepth 1 -type f -name "*$SERVICE_EXTENSION" -exec basename {} "$SERVICE_EXTENSION" \;)"
-SERVICES_SUBCONFIGS="$(cd "$SERVICES_DIR" && find . -mindepth 1 -maxdepth 1 -type d -exec basename {} \;)"
 
 function sanitizePath() {
     local SANITIZED_PATH="$1"
@@ -165,8 +165,13 @@ function remove_target() {
 # remove remaining legacy files
 function uninstall_legacy() {
     echo "removing legacy files"
+    resetTool "ectool" "$DEST_DIR$PREFIX_DIR/bin"
+    resetTool "ectool" "/usr/local/bin"
+    if ! contains "ectool" "${IGNORED_TOOLS[@]}"; then
+        unInstallTool "ectool" "$DEST_DIR$PREFIX_DIR/bin"
+        unInstallTool "ectool" "/usr/local/bin"
+    fi
     remove_target "/usr/local/bin/fw-fanctrl"
-    remove_target "/usr/local/bin/ectool"
     remove_target "/usr/local/bin/fanctrl.py"
     remove_target "/etc/systemd/system/fw-fanctrl.service"
     remove_target "$DEST_DIR$PREFIX_DIR/bin/fw-fanctrl"
@@ -188,19 +193,6 @@ function uninstall() {
         remove_target "$DEST_DIR$PREFIX_DIR/lib/systemd/system/$SERVICE$SERVICE_EXTENSION"
     done
 
-    # remove program services sub-configurations based on the sub-configurations present in the './services' folder
-    echo "removing services sub-configurations"
-    for SERVICE in $SERVICES_SUBCONFIGS ; do
-        SERVICE=$(sanitizePath "$SERVICE")
-        echo "removing sub-configurations for [$SERVICE]"
-        SUBCONFIGS="$(cd "$SERVICES_DIR/$SERVICE" && find . -mindepth 1 -type f)"
-        for SUBCONFIG in $SUBCONFIGS ; do
-            SUBCONFIG=$(sanitizePath "$SUBCONFIG")
-            echo "removing '$DEST_DIR$PREFIX_DIR/lib/systemd/$SERVICE/$SUBCONFIG'"
-            remove_target "$DEST_DIR$PREFIX_DIR/lib/systemd/$SERVICE/$SUBCONFIG"
-        done
-    done
-
     if [ "$NO_PIP_INSTALL" = false ]; then
         echo "uninstalling python package"
         if [ "$PIPX" = false ]; then
@@ -210,9 +202,9 @@ function uninstall() {
         fi
     fi
 
-    ectool autofanctrl 2> "/dev/null" || true # restore default fan manager
-    if [ "$SHOULD_INSTALL_ECTOOL" = true ]; then
-        remove_target "$DEST_DIR$PREFIX_DIR/bin/ectool"
+    resetTool "framework_tool" "$DEST_DIR$PREFIX_DIR/bin"
+    if ! contains "framework_tool" "${IGNORED_TOOLS[@]}"; then
+        unInstallTool "framework_tool" "$DEST_DIR$PREFIX_DIR/bin"
     fi
     remove_target "$DEST_DIR$SYSCONF_DIR/fw-fanctrl"
     remove_target "/run/fw-fanctrl"
@@ -225,9 +217,9 @@ function install() {
 
     remove_target "$TEMP_FOLDER"
     mkdir -p "$DEST_DIR$PREFIX_DIR/bin"
-    if [ "$SHOULD_INSTALL_ECTOOL" = true ]; then
+    if ! contains "framework_tool" "${IGNORED_TOOLS[@]}"; then
         mkdir "$TEMP_FOLDER"
-        installEctool "$TEMP_FOLDER" || (echo "an error occurred when installing ectool." && echo "please check your internet connection or consider installing it manually and using --no-ectool on the installation script." && exit 1)
+        installFrameworkTool "$TEMP_FOLDER" || (echo "an error occurred when installing framework_tool." && echo "please check your internet connection or consider installing it manually and using '--ignore-tool framework_tool' on the installation script." && exit 1)
         remove_target "$TEMP_FOLDER"
     fi
     mkdir -p "$DEST_DIR$SYSCONF_DIR/fw-fanctrl"
@@ -249,11 +241,6 @@ function install() {
     cp -pn "./src/fw_fanctrl/_resources/config.json" "$DEST_DIR$SYSCONF_DIR/fw-fanctrl" 2> "/dev/null" || true
     cp -f "./src/fw_fanctrl/_resources/config.schema.json" "$DEST_DIR$SYSCONF_DIR/fw-fanctrl" 2> "/dev/null" || true
 
-    # add --no-battery-sensors flag to the fanctrl service if specified
-    if [ "$NO_BATTERY_SENSOR" = true ]; then
-        NO_BATTERY_SENSOR_OPTION="--no-battery-sensors"
-    fi
-
     # create program services based on the services present in the './services' folder
     echo "creating '$DEST_DIR$PREFIX_DIR/lib/systemd/system'"
     mkdir -p "$DEST_DIR$PREFIX_DIR/lib/systemd/system"
@@ -265,31 +252,9 @@ function install() {
             systemctl stop "$SERVICE"
         fi
         echo "creating '$DEST_DIR$PREFIX_DIR/lib/systemd/system/$SERVICE$SERVICE_EXTENSION'"
-        cat "$SERVICES_DIR/$SERVICE$SERVICE_EXTENSION" | sed -e "s/%PYTHON_SCRIPT_INSTALLATION_PATH%/${PYTHON_SCRIPT_INSTALLATION_PATH//\//\\/}/" | sed -e "s/%SYSCONF_DIRECTORY%/${SYSCONF_DIR//\//\\/}/" | sed -e "s/%NO_BATTERY_SENSOR_OPTION%/${NO_BATTERY_SENSOR_OPTION}/" | tee "$DEST_DIR$PREFIX_DIR/lib/systemd/system/$SERVICE$SERVICE_EXTENSION" > "/dev/null"
+        cat "$SERVICES_DIR/$SERVICE$SERVICE_EXTENSION" | sed -e "s/%PYTHON_SCRIPT_INSTALLATION_PATH%/${PYTHON_SCRIPT_INSTALLATION_PATH//\//\\/}/" | sed -e "s/%SYSCONF_DIRECTORY%/${SYSCONF_DIR//\//\\/}/" | tee "$DEST_DIR$PREFIX_DIR/lib/systemd/system/$SERVICE$SERVICE_EXTENSION" > "/dev/null"
     done
 
-    # add program services sub-configurations based on the sub-configurations present in the './services' folder
-    echo "adding services sub-configurations"
-    for SERVICE in $SERVICES_SUBCONFIGS ; do
-        SERVICE=$(sanitizePath "$SERVICE")
-        echo "adding sub-configurations for [$SERVICE]"
-        SUBCONFIG_FOLDERS="$(cd "$SERVICES_DIR/$SERVICE" && find . -mindepth 1 -maxdepth 1 -type d -exec basename {} \;)"
-        # ensure folders exists
-        mkdir -p "$DEST_DIR$PREFIX_DIR/lib/systemd/$SERVICE"
-        for SUBCONFIG_FOLDER in $SUBCONFIG_FOLDERS ; do
-            SUBCONFIG_FOLDER=$(sanitizePath "$SUBCONFIG_FOLDER")
-            echo "creating '$DEST_DIR$PREFIX_DIR/lib/systemd/$SERVICE/$SUBCONFIG_FOLDER'"
-            mkdir -p "$DEST_DIR$PREFIX_DIR/lib/systemd/$SERVICE/$SUBCONFIG_FOLDER"
-        done
-        SUBCONFIGS="$(cd "$SERVICES_DIR/$SERVICE" && find . -mindepth 1 -type f)"
-        # add sub-configurations
-        for SUBCONFIG in $SUBCONFIGS ; do
-            SUBCONFIG=$(sanitizePath "$SUBCONFIG")
-            echo "adding '$DEST_DIR$PREFIX_DIR/lib/systemd/$SERVICE/$SUBCONFIG'"
-            cat "$SERVICES_DIR/$SERVICE/$SUBCONFIG" | sed -e "s/%PYTHON_SCRIPT_INSTALLATION_PATH%/${PYTHON_SCRIPT_INSTALLATION_PATH//\//\\/}/" | tee "$DEST_DIR$PREFIX_DIR/lib/systemd/$SERVICE/$SUBCONFIG" > "/dev/null"
-            chmod +x "$DEST_DIR$PREFIX_DIR/lib/systemd/$SERVICE/$SUBCONFIG"
-        done
-    done
     if [ "$SHOULD_POST_INSTALL" = true ]; then
         if ! ./post-install.sh --dest-dir "$DEST_DIR" --sysconf-dir "$SYSCONF_DIR" "$([ "$NO_SUDO" = true ] && echo "--no-sudo")"; then
             echo "Failed to run ./post-install.sh. Run the script with root permissions,"
@@ -299,37 +264,83 @@ function install() {
     fi
 }
 
-function installEctool() {
-    workingDirectory=$1
-    echo "installing ectool"
+function resetTool() {
+    toolId="$1"
+    toolPath="$2/$toolId"
 
-    ectoolDestPath="$DEST_DIR$PREFIX_DIR/bin/ectool"
+    echo "Resetting $toolId"
 
-    ectoolJobId="$(cat './fetch/ectool/linux/gitlab_job_id')"
-    ectoolSha256Hash="$(cat './fetch/ectool/linux/hash.sha256')"
+    # legacy
+    if [ "$toolId" = "ectool" ]; then
+        "$toolPath" autofanctrl 2> "/dev/null" || true
+    fi
 
-    artifactsZipFile="$workingDirectory/artifact.zip"
+    if [ "$toolId" = "framework_tool" ]; then
+        "$toolPath" --autofanctrl 2> "/dev/null" || true
+    fi
 
-    echo "downloading artifact from gitlab"
-    curl -s -S -o "$artifactsZipFile" -L "https://gitlab.howett.net/DHowett/ectool/-/jobs/${ectoolJobId}/artifacts/download?file_type=archive" || (echo "failed to download the artifact." && return 1)
+    echo "$toolId reset"
+}
+
+function unInstallTool() {
+    toolId="$1"
+    toolPath="$2/$toolId"
+
+    echo "Uninstalling $toolId"
+    resetTool "$1" "$2"
+
+    remove_target "$toolPath"
+    echo "$toolId uninstalled from '$toolPath'"
+}
+
+
+function installTool() {
+    workingDirectory="$1"
+    toolId="$2"
+    toolDestPath="$3/$toolId"
+
+    echo "Installing $toolId"
+
+    toolTargetUrl="$(awk '{$1=$1; print}' "./fetch/$toolId/linux/target.url")"
+    toolReleaseVersion="$(awk '{$1=$1; print}' "./fetch/$toolId/linux/release.version")"
+    toolSha256Hash="$(awk '{$1=$1; print}' "./fetch/$toolId/linux/sha256.hash")"
+
+    if [ -z "$toolTargetUrl" ] || [ -z "$toolReleaseVersion" ] || [ -z "$toolSha256Hash" ]; then
+      echo "Failed to gather necessary data for $toolId"
+      return 1
+    fi
+
+    artifactPath="$workingDirectory/$toolId"
+
+    curl -s -S -o "$artifactPath" -L "$(echo "$toolTargetUrl" | sed -e "s/%RELEASE_VERSION%/${toolReleaseVersion//\//\\/}/")" || (echo "failed to download the artifact." && return 1)
     if [[ $? -ne 0 ]]; then return 1; fi
 
     echo "checking artifact sha256 sum"
-    actualEctoolSha256Hash=$(sha256sum "$artifactsZipFile" | cut -d ' ' -f 1)
-    if [[ "$actualEctoolSha256Hash" != "$ectoolSha256Hash" ]]; then
-        echo "Incorrect sha256 sum for ectool gitlab artifact '$ectoolJobId' : '$ectoolSha256Hash' != '$actualEctoolSha256Hash'"
-        return 1
+    echo "$toolSha256Hash $artifactPath" | sha256sum --check --status
+    if [[ $? -ne 0 ]]; then
+      echo "Incorrect sha256 sum for $toolId artifact '$toolReleaseVersion' : target '$toolSha256Hash' != actual '$(sha256sum "$artifactPath" | cut -d ' ' -f 1)'"
+      return 1
     fi
+    echo "Valid $toolId checksum '$toolSha256Hash'"
 
-    echo "extracting artifact"
-    {
-        unzip -q -j "$artifactsZipFile" '_build/src/ectool' -d "$workingDirectory" &&
-        cp "$workingDirectory/ectool" "$ectoolDestPath" &&
-        chmod +x "$ectoolDestPath"
-    } || (echo "failed to extract the artifact to its designated location." && return 1)
-    if [[ $? -ne 0 ]]; then return 1; fi
+    cp "$artifactPath" "$toolDestPath" &&
+    chmod +x "$toolDestPath"
 
-    echo "ectool installed"
+    echo "$toolId installed at '$toolDestPath'"
+}
+
+function installFrameworkTool() {
+    installTool "$1" "framework_tool" "$DEST_DIR$PREFIX_DIR/bin"
+}
+
+contains() {
+  local needle="$1"
+  shift
+  local x
+  for x in "$@"; do
+    [ "$x" = "$needle" ] && return 0
+  done
+  return 1
 }
 
 if [ "$SHOULD_REMOVE" = true ]; then
